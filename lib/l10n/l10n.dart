@@ -1784,6 +1784,16 @@ class AppLocalizations {
     );
   }
 
+  /// `Close Connection`
+  String get closeConnection {
+    return Intl.message('Close Connection', name: 'closeConnection', desc: '', args: []);
+  }
+
+  /// `Close Connections`
+  String get closeConnections {
+    return Intl.message('Close Connections', name: 'closeConnections', desc: '', args: []);
+  }
+
   /// `Layout`
   String get layout {
     return Intl.message('Layout', name: 'layout', desc: '', args: []);

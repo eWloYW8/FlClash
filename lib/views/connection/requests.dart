@@ -1,14 +1,63 @@
+import 'dart:async';
+import 'dart:math';
+
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/providers/providers.dart';
 import 'package:fl_clash/state.dart';
 import 'package:fl_clash/widgets/widgets.dart';
+import 'package:fl_clash/views/connection/connections.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:super_sliver_list/super_sliver_list.dart';
+import 'package:intl/intl.dart';
 
-import 'item.dart';
+enum RequestColumn {
+  time,
+  host,
+  process,
+  rule,
+  chains;
+
+  String get label {
+    return switch (this) {
+      RequestColumn.time => 'Time',
+      RequestColumn.host => 'Host',
+      RequestColumn.process => 'Process',
+      RequestColumn.rule => 'Rule',
+      RequestColumn.chains => 'Chains',
+    };
+  }
+
+  double get defaultWidth {
+    return switch (this) {
+      RequestColumn.time => 160,
+      RequestColumn.host => 220,
+      RequestColumn.process => 120,
+      RequestColumn.rule => 140,
+      RequestColumn.chains => 180,
+    };
+  }
+
+  int compare(TrackerInfo a, TrackerInfo b) {
+    switch (this) {
+      case RequestColumn.time:
+        return b.start.compareTo(a.start);
+      case RequestColumn.host:
+        final hostA = a.metadata.host.isEmpty ? a.metadata.destinationIP : a.metadata.host;
+        final hostB = b.metadata.host.isEmpty ? b.metadata.destinationIP : b.metadata.host;
+        return hostA.compareTo(hostB);
+      case RequestColumn.process:
+        return a.metadata.process.compareTo(b.metadata.process);
+      case RequestColumn.rule:
+        return a.rule.compareTo(b.rule);
+      case RequestColumn.chains:
+        return a.chains.last.compareTo(b.chains.last);
+    }
+  }
+}
 
 class RequestsView extends ConsumerStatefulWidget {
   const RequestsView({super.key});
@@ -18,149 +67,464 @@ class RequestsView extends ConsumerStatefulWidget {
 }
 
 class _RequestsViewState extends ConsumerState<RequestsView> {
-  final _requestsStateNotifier = ValueNotifier<TrackerInfosState>(
-    const TrackerInfosState(),
-  );
+  // Data State
   List<TrackerInfo> _requests = [];
-  late ScrollController _scrollController;
+  bool _autoScroll = true;
 
-  void _onSearch(String value) {
-    _requestsStateNotifier.value = _requestsStateNotifier.value.copyWith(
-      query: value,
-    );
-  }
+  // Search
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
 
-  void _onKeywordsUpdate(List<String> keywords) {
-    _requestsStateNotifier.value = _requestsStateNotifier.value.copyWith(
-      keywords: keywords,
-    );
-  }
+  // Sorting
+  RequestColumn _sortColumn = RequestColumn.time;
+  bool _sortAscending = true; // 默认时间倒序(也就是最新的在上面)
+
+  // Scrolling
+  final ScrollController _verticalScrollController = ScrollController();
+  final ScrollController _horizontalScrollController = ScrollController();
+
+  // Columns
+  final List<RequestColumn> _columns = RequestColumn.values;
+  late Map<RequestColumn, double> _columnWidths;
 
   @override
   void initState() {
     super.initState();
+    _columnWidths = {
+      for (var col in _columns) col: col.defaultWidth,
+    };
+    
+    // 初始化数据
     _requests = globalState.appState.requests.list;
-    _scrollController = ScrollController(initialScrollOffset: double.maxFinite);
-    _requestsStateNotifier.value = _requestsStateNotifier.value.copyWith(
-      trackerInfos: _requests,
+    
+    // 监听数据源变化
+    ref.listenManual(requestsProvider.select((state) => state.list), (prev, next) {
+      // 使用 throttler 避免过于频繁刷新导致表格重绘卡顿
+      throttler.call(FunctionTag.requests, () {
+        if (!mounted) return;
+        if (!trackerInfoListEquality.equals(_requests, next)) {
+          setState(() {
+            _requests = next;
+          });
+          // 如果开启了自动滚动，且当前不是处于搜索或自定义排序状态(通常自动滚动意味着看最新的)
+          if (_autoScroll && _searchQuery.isEmpty && _sortColumn == RequestColumn.time && _sortAscending == true) {
+             // 列表是倒序的(最新的在最前)，所以不需要滚动到底部，只需要保持在顶部
+             if (_verticalScrollController.hasClients) {
+                _verticalScrollController.jumpTo(0);
+             }
+          }
+        }
+      }, duration: commonDuration);
+    });
+  }
+
+  void _handleSort(RequestColumn column) {
+    setState(() {
+      if (_sortColumn == column) {
+        _sortAscending = !_sortAscending;
+      } else {
+        _sortColumn = column;
+        _sortAscending = true;
+      }
+    });
+  }
+
+  void _handleResize(RequestColumn column, double delta) {
+    setState(() {
+      final currentWidth = _columnWidths[column]!;
+      final newWidth = max(40.0, currentWidth + delta);
+      _columnWidths[column] = newWidth;
+    });
+  }
+
+  List<TrackerInfo> get _filteredAndSortedRequests {
+    var list = _requests;
+    
+    // Search
+    if (_searchQuery.isNotEmpty) {
+      final q = _searchQuery.toLowerCase();
+      list = list.where((info) {
+        return info.metadata.host.toLowerCase().contains(q) ||
+            info.metadata.destinationIP.contains(q) ||
+            info.metadata.process.toLowerCase().contains(q) ||
+            info.rule.toLowerCase().contains(q);
+      }).toList();
+    }
+
+    // Sort
+    final sortedList = List<TrackerInfo>.from(list);
+    sortedList.sort((a, b) {
+      final compare = _sortColumn.compare(a, b);
+      return _sortAscending ? compare : -compare;
+    });
+    
+    return sortedList;
+  }
+
+  void _showRequestDetails(TrackerInfo info) {
+    showExtend(
+      context,
+      builder: (_, type) {
+        return AdaptiveSheetScaffold(
+          type: type,
+          body: TrackerInfoDetailView(trackerInfo: info),
+          title: appLocalizations.details(appLocalizations.request),
+        );
+      },
     );
-    ref.listenManual(requestsProvider.select((state) => state.list), (
-      prev,
-      next,
-    ) {
-      _requests = next;
-      updateRequestsThrottler();
+  }
+
+  void _clearRequests() {
+    ref.read(requestsProvider.notifier).value = FixedList(maxLength);
+    setState(() {
+      _requests = [];
     });
   }
 
   @override
   void dispose() {
-    _requestsStateNotifier.dispose();
-    _scrollController.dispose();
+    _searchController.dispose();
+    _verticalScrollController.dispose();
+    _horizontalScrollController.dispose();
     super.dispose();
-  }
-
-  void updateRequestsThrottler() {
-    throttler.call(FunctionTag.requests, () {
-      if (!mounted) {
-        return;
-      }
-      final isEquality = trackerInfoListEquality.equals(
-        _requests,
-        _requestsStateNotifier.value.trackerInfos,
-      );
-      if (isEquality) {
-        return;
-      }
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          _requestsStateNotifier.value = _requestsStateNotifier.value.copyWith(
-            trackerInfos: _requests,
-          );
-        }
-      });
-    }, duration: commonDuration);
   }
 
   @override
   Widget build(BuildContext context) {
+    final requests = _filteredAndSortedRequests;
+
     return CommonScaffold(
       title: appLocalizations.requests,
-      searchState: AppBarSearchState(onSearch: _onSearch),
-      onKeywordsUpdate: _onKeywordsUpdate,
-      floatingActionButton: ValueListenableBuilder(
-        valueListenable: _requestsStateNotifier,
-        builder: (_, state, _) {
-          final autoScrollToEnd = state.autoScrollToEnd;
-          return FadeRotationScaleBox(
-            child: FloatingActionButton(
-              key: ValueKey(autoScrollToEnd),
-              onPressed: () {
-                _requestsStateNotifier.value = _requestsStateNotifier.value
-                    .copyWith(
-                      autoScrollToEnd:
-                          !_requestsStateNotifier.value.autoScrollToEnd,
-                    );
-              },
-              child: autoScrollToEnd
-                  ? const Icon(Icons.block)
-                  : const Icon(Icons.vertical_align_top),
+      actions: [
+        SizedBox(
+          width: 200,
+          height: 36,
+          child: TextField(
+            controller: _searchController,
+            decoration: InputDecoration(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+              hintText: appLocalizations.search,
+              prefixIcon: const Icon(Icons.search, size: 18),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(18),
+                borderSide: BorderSide.none,
+              ),
+              filled: true,
+              fillColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+              suffixIcon: _searchQuery.isNotEmpty
+                  ? IconButton(
+                      icon: const Icon(Icons.clear, size: 16),
+                      onPressed: () {
+                        _searchController.clear();
+                        setState(() {
+                          _searchQuery = '';
+                        });
+                      },
+                    )
+                  : null,
             ),
-          );
-        },
+            style: const TextStyle(fontSize: 14),
+            onChanged: (value) {
+              setState(() {
+                _searchQuery = value;
+              });
+            },
+          ),
+        ),
+        const SizedBox(width: 8),
+        IconButton(
+          tooltip: appLocalizations.clearData,
+          onPressed: _clearRequests,
+          icon: const Icon(Icons.delete_sweep_outlined),
+        ),
+        const SizedBox(width: 8),
+      ],
+      floatingActionButton: FadeRotationScaleBox(
+        child: FloatingActionButton(
+          key: ValueKey(_autoScroll),
+          onPressed: () {
+            setState(() {
+              _autoScroll = !_autoScroll;
+            });
+          },
+          child: _autoScroll
+              ? const Icon(Icons.pause)
+              : const Icon(Icons.play_arrow),
+        ),
       ),
-      body: ValueListenableBuilder<TrackerInfosState>(
-        valueListenable: _requestsStateNotifier,
-        builder: (context, state, _) {
-          final requests = state.list;
-          if (requests.isEmpty) {
-            return NullStatus(
-              label: appLocalizations.nullTip(appLocalizations.requests),
-            );
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          final totalFixedWidth = _columns.fold<double>(
+              0, (sum, col) => sum + (_columnWidths[col] ?? col.defaultWidth));
+          
+          double scaleRatio = 1.0;
+          if (constraints.maxWidth > totalFixedWidth) {
+            scaleRatio = constraints.maxWidth / totalFixedWidth;
           }
-          final items = requests
-              .map<Widget>(
-                (trackerInfo) => TrackerInfoItem(
-                  key: Key(trackerInfo.id),
-                  trackerInfo: trackerInfo,
-                  onClickKeyword: (value) {
-                    context.commonScaffoldState?.addKeyword(value);
-                  },
-                  detailTitle: appLocalizations.details(
-                    appLocalizations.request,
+
+          final effectiveColumnWidths = {
+            for (var col in _columns)
+              col: (_columnWidths[col] ?? col.defaultWidth) * scaleRatio
+          };
+
+          final contentWidth = max(constraints.maxWidth, totalFixedWidth);
+
+          return Column(
+            children: [
+              Expanded(
+                child: Scrollbar(
+                  controller: _verticalScrollController,
+                  thumbVisibility: true,
+                  child: Scrollbar(
+                    controller: _horizontalScrollController,
+                    thumbVisibility: true,
+                    notificationPredicate: (notification) => notification.depth == 1,
+                    child: SingleChildScrollView(
+                      controller: _horizontalScrollController,
+                      scrollDirection: Axis.horizontal,
+                      physics: scaleRatio > 1.0 ? const NeverScrollableScrollPhysics() : const ClampingScrollPhysics(),
+                      child: SizedBox(
+                        width: contentWidth,
+                        child: Column(
+                          children: [
+                            _ResizableHeaderRow(
+                              columns: _columns,
+                              columnWidths: effectiveColumnWidths,
+                              sortColumn: _sortColumn,
+                              isAscending: _sortAscending,
+                              onSort: _handleSort,
+                              onResizeDelta: (col, delta) {
+                                _handleResize(col, delta / scaleRatio);
+                              },
+                            ),
+                            const Divider(height: 1),
+                            Expanded(
+                              child: requests.isEmpty
+                                  ? Center(child: Text(appLocalizations.noData))
+                                  : ListView.builder(
+                                      controller: _verticalScrollController,
+                                      itemCount: requests.length,
+                                      itemExtent: 40,
+                                      itemBuilder: (context, index) {
+                                        final info = requests[index];
+                                        return _RequestRow(
+                                          key: ValueKey(info.id),
+                                          info: info,
+                                          columns: _columns,
+                                          columnWidths: effectiveColumnWidths,
+                                          onTap: () => _showRequestDetails(info),
+                                        );
+                                      },
+                                    ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                   ),
                 ),
-              )
-              .separated(const Divider(height: 0))
-              .toList();
-          return Align(
-            alignment: Alignment.topCenter,
-            child: CommonScrollBar(
-              trackVisibility: false,
-              controller: _scrollController,
-              child: ScrollToEndBox(
-                controller: _scrollController,
-                dataSource: requests,
-                enable: state.autoScrollToEnd,
-                onCancelToEnd: () {
-                  _requestsStateNotifier.value = _requestsStateNotifier.value
-                      .copyWith(autoScrollToEnd: false);
-                },
-                child: SuperListView.builder(
-                  reverse: true,
-                  shrinkWrap: true,
-                  physics: NextClampingScrollPhysics(),
-                  controller: _scrollController,
-                  itemBuilder: (_, index) {
-                    return items[index];
-                  },
-                  itemCount: items.length,
-                ),
               ),
-            ),
+            ],
           );
         },
       ),
     );
+  }
+}
+
+class _ResizableHeaderRow extends StatelessWidget {
+  final List<RequestColumn> columns;
+  final Map<RequestColumn, double> columnWidths;
+  final RequestColumn sortColumn;
+  final bool isAscending;
+  final ValueChanged<RequestColumn> onSort;
+  final Function(RequestColumn, double) onResizeDelta;
+
+  const _ResizableHeaderRow({
+    required this.columns,
+    required this.columnWidths,
+    required this.sortColumn,
+    required this.isAscending,
+    required this.onSort,
+    required this.onResizeDelta,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 40,
+      color: Theme.of(context).colorScheme.surface,
+      child: Row(
+        children: columns.map((col) {
+          final width = columnWidths[col]!;
+          final isSorted = col == sortColumn;
+
+          return SizedBox(
+            width: width,
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: InkWell(
+                    onTap: () => onSort(col),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              col.label,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .labelMedium
+                                  ?.copyWith(
+                                    fontWeight: FontWeight.bold,
+                                    color: isSorted
+                                        ? Theme.of(context).colorScheme.primary
+                                        : null,
+                                  ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          if (isSorted)
+                            Icon(
+                              isAscending
+                                  ? Icons.arrow_upward
+                                  : Icons.arrow_downward,
+                              size: 14,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                Positioned(
+                  right: 0,
+                  top: 0,
+                  bottom: 0,
+                  width: 5,
+                  child: MouseRegion(
+                    cursor: SystemMouseCursors.resizeColumn,
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.translucent,
+                      onHorizontalDragUpdate: (details) {
+                        if (details.primaryDelta != null) {
+                          onResizeDelta(col, details.primaryDelta!);
+                        }
+                      },
+                      child: Container(
+                        color: Colors.transparent,
+                        width: 5,
+                      ),
+                    ),
+                  ),
+                ),
+                Positioned(
+                  right: 0,
+                  top: 8,
+                  bottom: 8,
+                  child: Container(
+                    width: 1,
+                    color: Theme.of(context).dividerColor.withOpacity(0.5),
+                  ),
+                )
+              ],
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
+}
+
+class _RequestRow extends StatelessWidget {
+  final TrackerInfo info;
+  final List<RequestColumn> columns;
+  final Map<RequestColumn, double> columnWidths;
+  final VoidCallback onTap;
+
+  const _RequestRow({
+    super.key,
+    required this.info,
+    required this.columns,
+    required this.columnWidths,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    final rowColor = WidgetStateProperty.resolveWith<Color?>((states) {
+      if (states.contains(WidgetState.hovered)) {
+        return colorScheme.surfaceContainerHighest.withOpacity(0.5);
+      }
+      return null;
+    });
+
+    return TextButton(
+      style: ButtonStyle(
+        padding: WidgetStateProperty.all(EdgeInsets.zero),
+        shape: WidgetStateProperty.all(const RoundedRectangleBorder()),
+        overlayColor: rowColor,
+        backgroundColor: rowColor,
+      ),
+      onPressed: onTap,
+      child: Row(
+        children: columns.map((col) {
+          return SizedBox(
+            width: columnWidths[col],
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              alignment: Alignment.centerLeft,
+              child: _buildCell(context, col, info, textTheme, colorScheme),
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  Widget _buildCell(
+    BuildContext context,
+    RequestColumn col,
+    TrackerInfo info,
+    TextTheme textTheme,
+    ColorScheme colorScheme,
+  ) {
+    final style = textTheme.bodySmall?.copyWith(
+      fontFamily: FontFamily.jetBrainsMono.value,
+      overflow: TextOverflow.ellipsis,
+    );
+
+    switch (col) {
+      case RequestColumn.time:
+        return Text(DateFormat('y/d/M HH:mm:ss').format(info.start), style: style);
+      case RequestColumn.process:
+        return Text(info.metadata.process, style: style);
+      case RequestColumn.host:
+        final host = info.metadata.host;
+        final ip = info.metadata.destinationIP;
+        final port = info.metadata.destinationPort;
+        if (host.isNotEmpty) {
+          return Tooltip(
+            message: '$host:$port ($ip)',
+            waitDuration: const Duration(milliseconds: 500),
+            child: Text('$host:$port', style: style),
+          );
+        }
+        return Text('$ip:$port', style: style);
+      case RequestColumn.rule:
+        return Text(info.rule, style: style);
+      case RequestColumn.chains:
+        return Tooltip(
+          message: info.chains.reversed.join(' -> '),
+          waitDuration: const Duration(milliseconds: 500),
+          child: Text(
+            info.chains.reversed.join(' ← '),
+            style: style?.copyWith(color: colorScheme.secondary),
+          ),
+        );
+    }
   }
 }
