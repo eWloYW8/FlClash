@@ -98,7 +98,7 @@ class Tray {
       );
     }
     menuItems.add(MenuItem.separator());
-    if (system.isMacOS) {
+    if (system.isMacOS || system.isWindows) {
       for (final group in trayState.groups) {
         List<MenuItem> subMenuItems = [];
         for (final proxy in group.all) {
