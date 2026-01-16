@@ -203,11 +203,62 @@ class _ConnectionsViewState extends ConsumerState<ConnectionsView> {
     if (_searchQuery.isNotEmpty) {
       final q = _searchQuery.toLowerCase();
       list = list.where((info) {
-        return info.metadata.host.toLowerCase().contains(q) ||
-            info.metadata.destinationIP.contains(q) ||
-            info.metadata.process.toLowerCase().contains(q) ||
-            info.metadata.sourceIP.contains(q) ||
-            info.rule.toLowerCase().contains(q);
+        final host = info.metadata.host.toLowerCase();
+        final ip = info.metadata.destinationIP.toLowerCase();
+        final process = info.metadata.process.toLowerCase();
+        final sourceIP = info.metadata.sourceIP.toLowerCase();
+        final sourcePort = info.metadata.sourcePort.toLowerCase();
+        final rule = info.rule.toLowerCase();
+        final chains = info.chains.join(' ').toLowerCase();
+        final time = info.start.toString().toLowerCase();
+
+        final destinationPort = info.metadata.destinationPort.toLowerCase();
+        final source = '$sourceIP:$sourcePort';
+        final hostCell = (info.metadata.host.isNotEmpty
+                ? '${info.metadata.host}:${info.metadata.destinationPort}'
+                : '${info.metadata.destinationIP}:${info.metadata.destinationPort}')
+            .toLowerCase();
+
+        final upload = info.upload.toString().toLowerCase();
+        final download = info.download.toString().toLowerCase();
+        final uploadSpeed = (info.uploadSpeed ?? 0).toString().toLowerCase();
+        final downloadSpeed = (info.downloadSpeed ?? 0).toString().toLowerCase();
+    
+        final uid = info.metadata.uid.toString().toLowerCase();
+        final network = info.metadata.network.toLowerCase();
+        final rulePayload = info.rulePayload.toLowerCase();
+
+        final destinationGeoIP = info.metadata.destinationGeoIP.join(' ').toLowerCase();
+        final destinationIPASN = info.metadata.destinationIPASN.toLowerCase();
+        final dnsMode = (info.metadata.dnsMode?.name ?? '').toLowerCase();
+        final specialProxy = info.metadata.specialProxy.toLowerCase();
+        final specialRules = info.metadata.specialRules.toLowerCase();
+        final remoteDestination = info.metadata.remoteDestination.toLowerCase();
+
+        return host.contains(q) ||
+            ip.contains(q) ||
+            destinationPort.contains(q) ||
+            hostCell.contains(q) ||
+            process.contains(q) ||
+            uid.contains(q) ||
+            sourceIP.contains(q) ||
+            sourcePort.contains(q) ||
+            source.contains(q) ||
+            network.contains(q) ||
+            rule.contains(q) ||
+            rulePayload.contains(q) ||
+            chains.contains(q) ||
+            upload.contains(q) ||
+            download.contains(q) ||
+            uploadSpeed.contains(q) ||
+            downloadSpeed.contains(q) ||
+            destinationGeoIP.contains(q) ||
+            destinationIPASN.contains(q) ||
+            dnsMode.contains(q) ||
+            specialProxy.contains(q) ||
+            specialRules.contains(q) ||
+            remoteDestination.contains(q) ||
+            time.contains(q);
       }).toList();
     }
 
@@ -611,7 +662,7 @@ class _ConnectionRow extends StatelessWidget {
         return Text(info.rule, style: style);
       case ConnectionColumn.chains:
         return Text(
-          info.chains.reversed.join(' ← '),
+          info.chains.reversed.join(' → '),
           style: style?.copyWith(color: colorScheme.secondary),
         );
       case ConnectionColumn.uploadSpeed:

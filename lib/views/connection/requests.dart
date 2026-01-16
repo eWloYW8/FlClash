@@ -144,10 +144,58 @@ class _RequestsViewState extends ConsumerState<RequestsView> {
     if (_searchQuery.isNotEmpty) {
       final q = _searchQuery.toLowerCase();
       list = list.where((info) {
-        return info.metadata.host.toLowerCase().contains(q) ||
-            info.metadata.destinationIP.contains(q) ||
-            info.metadata.process.toLowerCase().contains(q) ||
-            info.rule.toLowerCase().contains(q);
+        final host = info.metadata.host.toLowerCase();
+        final ip = info.metadata.destinationIP.toLowerCase();
+        final port = info.metadata.destinationPort.toLowerCase();
+    
+        final process = info.metadata.process.toLowerCase();
+        final uid = info.metadata.uid.toString().toLowerCase();
+    
+        final rule = info.rule.toLowerCase();
+        final rulePayload = info.rulePayload.toLowerCase();
+    
+        final chains = info.chains.join(' ').toLowerCase();
+        final time = info.start.toString().toLowerCase();
+    
+        final network = info.metadata.network.toLowerCase();
+    
+        final sourceIP = info.metadata.sourceIP.toLowerCase();
+        final sourcePort = info.metadata.sourcePort.toLowerCase();
+    
+        final destinationGeoIP = info.metadata.destinationGeoIP.join(' ').toLowerCase();
+        final destinationIPASN = info.metadata.destinationIPASN.toLowerCase();
+    
+        final dnsMode = (info.metadata.dnsMode?.name ?? '').toLowerCase();
+        final specialProxy = info.metadata.specialProxy.toLowerCase();
+        final specialRules = info.metadata.specialRules.toLowerCase();
+        final remoteDestination = info.metadata.remoteDestination.toLowerCase();
+    
+        final source = '$sourceIP:$sourcePort';
+        final hostCell = (info.metadata.host.isNotEmpty
+                ? '${info.metadata.host}:${info.metadata.destinationPort}'
+                : '${info.metadata.destinationIP}:${info.metadata.destinationPort}')
+            .toLowerCase();
+    
+        return host.contains(q) ||
+            ip.contains(q) ||
+            port.contains(q) ||
+            hostCell.contains(q) ||
+            process.contains(q) ||
+            uid.contains(q) ||
+            sourceIP.contains(q) ||
+            sourcePort.contains(q) ||
+            source.contains(q) ||
+            network.contains(q) ||
+            rule.contains(q) ||
+            rulePayload.contains(q) ||
+            chains.contains(q) ||
+            destinationGeoIP.contains(q) ||
+            destinationIPASN.contains(q) ||
+            dnsMode.contains(q) ||
+            specialProxy.contains(q) ||
+            specialRules.contains(q) ||
+            remoteDestination.contains(q) ||
+            time.contains(q);
       }).toList();
     }
 
@@ -499,7 +547,7 @@ class _RequestRow extends StatelessWidget {
 
     switch (col) {
       case RequestColumn.time:
-        return Text(DateFormat('y/d/M HH:mm:ss').format(info.start), style: style);
+        return Text(DateFormat('yyyy/MM/dd HH:mm:ss').format(info.start), style: style);
       case RequestColumn.process:
         return Text(info.metadata.process, style: style);
       case RequestColumn.host:
@@ -521,7 +569,7 @@ class _RequestRow extends StatelessWidget {
           message: info.chains.reversed.join(' -> '),
           waitDuration: const Duration(milliseconds: 500),
           child: Text(
-            info.chains.reversed.join(' ← '),
+            info.chains.reversed.join(' → '),
             style: style?.copyWith(color: colorScheme.secondary),
           ),
         );
